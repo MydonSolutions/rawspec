@@ -274,6 +274,22 @@ __global__ void accumulate(float * pwr_buf, unsigned int Na, size_t xpitch, size
   pwr_buf[offset0] = sum;
 }
 
+__constant__ char c_complex4_lower_nibble_LUT[256];
+__constant__ char c_complex4_upper_nibble_LUT[256];
+
+void setup_complex4_LUT()
+{
+  char d_lower_LUT[256];
+  char d_upper_LUT[256];
+  for(unsigned int i = 0; i < 256; i++){
+    d_upper_LUT[i] =  ((char)(i&0xf0))>>4;
+    d_lower_LUT[i] =  (((char)((i&0x0f)<<4)) >> 4);// <<-cast captures nibble's sign bit
+  }
+
+  cudaMemcpyToSymbol(c_complex4_lower_nibble_LUT, d_lower_LUT, sizeof(char) * 256);
+  cudaMemcpyToSymbol(c_complex4_upper_nibble_LUT, d_upper_LUT, sizeof(char) * 256);
+}
+
 // 4bit Expansion kernel
 // Takes the half full blocks of the fft_in buffer and expands each complex4 byte
 // Expectation of blockIdx, with a single thread each:
@@ -288,11 +304,13 @@ __global__ void copy_expand_complex4(char *complex4_dst, char *complex4_src,
                  ((blockIdx.x*blockDim.x + threadIdx.x)*thread_pitch);
 
   char* complex4_src_offset = complex4_src + blockIdx.z*block_pitch + offset;
-  char* complex4_dst_offset = complex4_dst + blockIdx.z*block_pitch + 2*offset;
+  char* complex4_dst_offset = (char*)(complex4_dst + blockIdx.z*block_pitch + 2*offset);
 
   for(i=0; i<thread_pitch; i++) {
-    complex4_dst_offset[2*i+0] =  ((char)(complex4_src_offset[i]&0xf0))>>4;
-    complex4_dst_offset[2*i+1] = ((char)((complex4_src_offset[i]&0x0f)<<4)) >> 4;// <<-cast captures nibble's sign bit
+    complex4_dst_offset[2*i+0] = c_complex4_upper_nibble_LUT[(unsigned char)complex4_src_offset[i]];
+    complex4_dst_offset[2*i+1] = c_complex4_lower_nibble_LUT[(unsigned char)complex4_src_offset[i]];
+    // complex4_dst_offset[2*i+0] =  ((char)(complex4_src_offset[i]&0xf0))>>4;
+    // complex4_dst_offset[2*i+1] = ((char)((complex4_src_offset[i]&0x0f)<<4)) >> 4;// <<-cast captures nibble's sign bit
   }
 }
 
@@ -401,6 +419,7 @@ int rawspec_initialize(rawspec_context * ctx)
         ctx->Nbps);
     fflush(stderr);
     ctx->Nbps = 8;
+    setup_complex4_LUT();
   }
 
   // Determine Ntmax (and validate Nts)
